@@ -8,7 +8,7 @@ from erpnext.stock.utils import get_bin
 from frappe.utils import cstr, flt, cint, get_files_path
 from .shopify_requests import post_request, get_shopify_items, put_request, get_shopify_item_image
 import base64, requests, datetime, os
-
+from vlog import vwrite, getAllImages
 shopify_variants_attr_list = ["option1", "option2", "option3"]
 
 def sync_products(price_list, warehouse):
@@ -118,12 +118,13 @@ def create_item(shopify_item, warehouse, has_variant=0, attributes=None,variant_
 		"stock_keeping_unit": shopify_item.get("sku") or get_sku(shopify_item),
 		"default_warehouse": warehouse,
 		"image": get_item_image(shopify_item),
+		"item_dummy_name": "testingnew",
+		"item_images": get_all_item_images(shopify_item),
 		"weight_uom": shopify_item.get("weight_unit"),
 		"net_weight": shopify_item.get("weight"),
 		"default_supplier": get_supplier(shopify_item)
 	}
 	item_dict["web_long_description"] = item_dict["shopify_description"]
-
 	if not is_item_exists(item_dict, attributes, shopify_item_list=shopify_item_list):
 		item_details = get_item_details(shopify_item)
 
@@ -140,6 +141,9 @@ def create_item(shopify_item, warehouse, has_variant=0, attributes=None,variant_
 			add_to_price_list(shopify_item, name)
 
 		frappe.db.commit()
+	else:
+		item_details = get_item_details(shopify_item)
+		update_item(item_details, item_dict)
 
 def create_item_variants(shopify_item, warehouse, attributes, shopify_variants_attr_list, shopify_item_list):
 	template_item = frappe.db.get_value("Item", filters={"shopify_product_id": shopify_item.get("id")},
@@ -212,7 +216,16 @@ def get_item_image(shopify_item):
 	if shopify_item.get("image"):
 		return shopify_item.get("image").get("src")
 	return None
+# >>vwithv1602
+def get_all_item_images(shopify_item):
+	images = []
+	if shopify_item.get("images"):
+		for image in shopify_item.get("images"):
+			images.append({"item_image": image.get("src")})
+			#images.append(image.get("src"))
+	return images
 
+# >>vwithv1602
 def get_supplier(shopify_item):
 	if shopify_item.get("vendor"):
 		supplier = frappe.db.sql("""select name from tabSupplier
@@ -326,17 +339,21 @@ def sync_erpnext_items(price_list, warehouse, shopify_item_list):
 	last_sync_condition = ""
 	if shopify_settings.last_sync_datetime:
 		last_sync_condition = "and modified >= '{0}' ".format(shopify_settings.last_sync_datetime)
+		last_images_sync_condition = "and (tI.modified >= '{0}' or tIImages.creation >= '{0}') ".format(
+		shopify_settings.last_sync_datetime)
 
 	item_query = """select name, item_code, item_name, item_group,
 		description, shopify_description, has_variants, stock_uom, image, shopify_product_id, 
-		shopify_variant_id, sync_qty_with_shopify, net_weight, weight_uom, default_supplier from tabItem
+		shopify_variant_id, sync_qty_with_shopify, net_weight, weight_uom, default_supplier,_user_tags from tabItem
 		where sync_with_shopify=1 and (variant_of is null or variant_of = '')
 		and (disabled is null or disabled = 0) %s """ % last_sync_condition
-
+	explicitly_sync_all_images_flag = True;
 	for item in frappe.db.sql(item_query, as_dict=1):
+		explicitly_sync_all_images_flag = False;
 		if item.shopify_product_id not in shopify_item_list:
 			try:
 				sync_item_with_shopify(item, price_list, warehouse)
+
 				frappe.local.form_dict.count_dict["products"] += 1
 
 			except ShopifyError, e:
@@ -345,6 +362,26 @@ def sync_erpnext_items(price_list, warehouse, shopify_item_list):
 			except Exception, e:
 				make_shopify_log(title=e.message, status="Error", method="sync_shopify_items", message=frappe.get_traceback(),
 					request_data=item, exception=True)
+	if explicitly_sync_all_images_flag:
+		# getting last sync date from item images table
+		# images_query = """select item_image,parent from `tabItem Images`"""
+		# images = frappe.db.sql(images_query, as_dict=1)
+		item_images_query = """select tI.name, tI.item_code, tI.item_name, tI.item_group,
+	    	tI.description, tI.shopify_description, tI.has_variants, tI.stock_uom, tI.image, tI.shopify_product_id, 
+	    	tI.shopify_variant_id, tI.sync_qty_with_shopify, tI.net_weight, tI.weight_uom, tI.default_supplier,
+	    	 tIImages.creation from tabItem tI,`tabItem Images` tIImages
+	    	where tI.sync_with_shopify=1 and (tI.variant_of is null or tI.variant_of = '')
+	    	and (tI.disabled is null or tI.disabled = 0) %s """ % last_images_sync_condition
+		for item in frappe.db.sql(item_images_query, as_dict=1):
+			init_sync_all_images(item);
+
+
+def init_sync_all_images(item):
+	erp_item = frappe.get_doc("Item", item.get("name"))
+	wherecondition = " parent = '%s' " % item.get("item_code")
+	images_query = """select item_image,parent from `tabItem Images` where %s""" % wherecondition
+	images = frappe.db.sql(images_query, as_dict=1)
+	sync_all_images(erp_item, images)
 
 def sync_item_with_shopify(item, price_list, warehouse):
 	variant_item_name_list = []
@@ -360,7 +397,7 @@ def sync_item_with_shopify(item, price_list, warehouse):
 			"published_at": datetime.datetime.now().isoformat()
 		}
 	}
-
+	item_data["product"]["tags"] = item.get("_user_tags")
 	if item.get("has_variants"):
 		variant_list, options, variant_item_name = get_variant_attributes(item, price_list, warehouse)
 
@@ -394,6 +431,7 @@ def sync_item_with_shopify(item, price_list, warehouse):
 				raise e
 
 	sync_item_image(erp_item)
+	init_sync_all_images(item);
 	frappe.db.commit()
 
 def create_new_item_to_shopify(item, item_data, erp_item, variant_item_name_list):
@@ -410,7 +448,6 @@ def sync_item_image(item):
 	image_info = {
         "image": {}
 	}
-
 	if item.image:
 		img_details = frappe.db.get_value("File", {"file_url": item.image}, ["file_name", "content_hash"])
 
@@ -434,6 +471,34 @@ def sync_item_image(item):
 			if not item_image_exists(item.shopify_product_id, image_info):
 				# to avoid image duplication
 				post_request("/admin/products/{0}/images.json".format(item.shopify_product_id), image_info)
+def sync_all_images(item,images):
+	image_info = {
+		"image": {}
+	}
+	erp_item = frappe.get_doc("Item", item.get("name"))
+	erp_item.flags.ignore_mandatory = True
+	for image in images:
+		if image.item_image:
+			img_details = frappe.db.get_value("File", {"file_url": image.item_image}, ["file_name", "content_hash"])
+
+			if img_details and img_details[0] and img_details[1]:
+				is_private = image.item_image.startswith("/private/files/")
+				with open(get_files_path(img_details[0].strip("/"), is_private=is_private), "rb") as image_file:
+					image_info["image"]["attachment"] = base64.b64encode(image_file.read())
+				image_info["image"]["filename"] = img_details[0]
+
+				# to avoid 422 : Unprocessable Entity
+				if not image_info["image"]["attachment"] or not image_info["image"]["filename"]:
+					return False
+
+			elif image.item_image.startswith("http") or image.item_image.startswith("ftp"):
+				if validate_image_url(image.item_image):
+					# to avoid 422 : Unprocessable Entity
+					image_info["image"]["src"] = image.item_image
+			if image_info["image"]:
+				if not item_image_exists(item.shopify_product_id, image_info):
+					# to avoid image duplication
+					post_request("/admin/products/{0}/images.json".format(item.shopify_product_id), image_info)
 
 
 def validate_image_url(url):
