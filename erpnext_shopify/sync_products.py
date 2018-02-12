@@ -335,7 +335,6 @@ def update_item(item_details, item_dict):
 	item.save()
 
 def sync_erpnext_items(price_list, warehouse, shopify_item_list):
-<<<<<<< HEAD
 	shopify_settings = frappe.get_doc("Shopify Settings", "Shopify Settings")
 
 	last_sync_condition = ""
@@ -349,9 +348,9 @@ def sync_erpnext_items(price_list, warehouse, shopify_item_list):
 		shopify_variant_id, sync_qty_with_shopify, net_weight, weight_uom, default_supplier,_user_tags from tabItem
 		where sync_with_shopify=1 and (variant_of is null or variant_of = '')
 		and (disabled is null or disabled = 0) %s """ % last_sync_condition
-	explicitly_sync_all_images_flag = True;
+	explicitly_sync_all_images_flag = True
 	for item in frappe.db.sql(item_query, as_dict=1):
-		explicitly_sync_all_images_flag = False;
+		explicitly_sync_all_images_flag = False
 		if item.shopify_product_id not in shopify_item_list:
 			try:
 				sync_item_with_shopify(item, price_list, warehouse)
@@ -375,7 +374,7 @@ def sync_erpnext_items(price_list, warehouse, shopify_item_list):
 	    	where tI.sync_with_shopify=1 and (tI.variant_of is null or tI.variant_of = '')
 	    	and (tI.disabled is null or tI.disabled = 0) %s """ % last_images_sync_condition
 		for item in frappe.db.sql(item_images_query, as_dict=1):
-			init_sync_all_images(item);
+			init_sync_all_images(item)
 
 
 def init_sync_all_images(item):
@@ -470,7 +469,7 @@ def sync_item_with_shopify(item, price_list, warehouse):
 				raise e
 
 	sync_item_image(erp_item)
-	init_sync_all_images(item);
+	init_sync_all_images(item)
 	frappe.db.commit()
 
 def create_new_item_to_shopify(item, item_data, erp_item, variant_item_name_list):
